@@ -96,6 +96,23 @@ class BigQueryRDDContext implements Serializable {
             request,
             options.toReadSessionCreatorConfig().toReadRowsHelperOptions(),
             Optional.of(tracer));
+
+    // Register a task completion listener to ensure the ReadRowsHelper is properly closed.
+    // This prevents connection leaks by guaranteeing cleanup in all scenarios:
+    // 1. When the iterator is not fully consumed (e.g., RDD operations like limit(), take(),
+    //    first(), or head() that stop reading before consuming all data)
+    // 2. When an exception occurs during iteration
+    // 3. When the task is cancelled or fails
+    // Without this listener, connections would leak whenever an RDD with limit is used,
+    // as the iterator would be abandoned without fully consuming all rows.
+    // The ReadRowsHelper.close() method is idempotent and safe to call multiple times,
+    // so this won't conflict with the close() call in InternalRowIterator.hasNext()
+    // when the iterator is fully consumed.
+    context.addTaskCompletionListener(
+        (TaskContext tc) -> {
+          readRowsHelper.close();
+        });
+
     Iterator<ReadRowsResponse> readRowsResponseIterator = readRowsHelper.readRows();
 
     StructType schema =
